@@ -58,10 +58,17 @@ team_t team = {
 #define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE))) // 다음 블록의 시작 포인터 리턴
 #define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE))) // 이전 블록의 시작 포인터 리턴
 
+#define GET_PREV_ALLOC(bp) (GET_ALLOC(FTRP(PREV_BLKP(bp))))
+#define GET_NEXT_ALLOC(bp) (GET_ALLOC(HDRP(NEXT_BLKP(bp))))
+#define GET_NEXT_SIZE(bp) (GET_SIZE(HDRP(NEXT_BLKP(bp))))
+#define GET_PREV_SIZE(bp) (GET_SIZE(HDRP(PREV_BLKP(bp))))
+#define GET_CUR_SIZE(bp) (GET_SIZE(HDRP(bp)))
+
 static void *extend_heap(size_t words);
 static void *coalesce(void *bp);
 static void *find_fit(size_t asize);       // first fit으로 적절한 가용 블록 리턴
 static void place(void *bp, size_t asize); // 남은 블록 분할
+static size_t get_asize(size_t size);
 static char *heap_listp;
 
 /*
@@ -90,16 +97,6 @@ int mm_init(void)
  */
 void *mm_malloc(size_t size)
 {
-    // int newsize = ALIGN(size + SIZE_T_SIZE); // size를 정렬해서 newsize로 만들고
-    // void *p = mem_sbrk(newsize);             // 할당 후 시작 주소를 리턴, 아마 brk를 리턴하는듯
-    // if (p == (void *)-1)
-    //     return NULL;
-    // else
-    // {
-    //     *(size_t *)p = size;
-    //     return (void *)((char *)p + SIZE_T_SIZE);
-    // }
-
     size_t asize; // 정렬 사이즈
     size_t extend_size;
     char *bp;
@@ -107,10 +104,7 @@ void *mm_malloc(size_t size)
     if (size == 0)
         return NULL;
 
-    if (size <= DSIZE)     // 만약 데이터가 8보다 작으면
-        asize = 2 * DSIZE; // 블록의 크기는 16 -> 헤더 8, 데이터 + 패딩 = 8
-    else
-        asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE); // ??뭐야이거
+    asize = get_asize(size);
 
     if ((bp = find_fit(asize)) != NULL) // 묵시적 가용 리스트에서 적절한 블록을 할당해주고
     {
@@ -143,19 +137,45 @@ void mm_free(void *ptr)
  */
 void *mm_realloc(void *ptr, size_t size)
 {
-    void *oldptr = ptr;
-    void *newptr;
-    size_t copySize;
-
-    newptr = mm_malloc(size);
-    if (newptr == NULL)
+    if (ptr == NULL)
+        return mm_malloc(size);
+    if (size == 0)
+    {
+        mm_free(ptr);
         return NULL;
-    copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
-    if (size < copySize)
-        copySize = size;
-    memcpy(newptr, oldptr, copySize);
-    mm_free(oldptr);
-    return newptr;
+    }
+
+    size_t old_block = GET_SIZE(HDRP(ptr)); // 헤더+푸터 포함
+    size_t old_payload = old_block - DSIZE; // 페이로드의 크기 -> 옮겨야 할 데이터
+    size_t new_asize = get_asize(size);     // 정렬 + 오버헤드 포함
+
+    if (new_asize <= old_block) /* 1) 새 크기가 더 작거나 같으면 분할/그대로 사용 */
+    {
+        place(ptr, new_asize);
+        return ptr; /* in-place, 주소 유지 */
+    }
+
+    /* 2) 오른쪽 블록을 붙여서 키울 수 있나? */
+    if (!GET_NEXT_ALLOC(ptr) &&
+        old_block + GET_NEXT_SIZE(ptr) >= new_asize)
+    {
+
+        size_t total = old_block + GET_NEXT_SIZE(ptr);
+        PUT(HDRP(ptr), PACK(total, 1));
+        PUT(FTRP(ptr), PACK(total, 1));
+        return ptr; /* 역시 in-place */
+    }
+
+    /* 3) 새 블록을 할당해서 옮긴다 */
+    void *new_ptr = mm_malloc(size);
+    if (new_ptr == NULL)
+        return NULL;
+
+    size_t copy = old_payload < size ? old_payload : size; //
+    memmove(new_ptr, ptr, copy);                           /* ← 겹침 대비해 memmove */
+
+    mm_free(ptr);
+    return new_ptr;
 }
 
 static void *extend_heap(size_t words)
@@ -178,9 +198,9 @@ static void *extend_heap(size_t words)
 
 static void *coalesce(void *bp)
 {
-    size_t prev_alloc = GET_ALLOC(FTRP(PREV_BLKP(bp))); // bp의 이전 블록 푸터 할당 비트
-    size_t next_alloc = GET_ALLOC(HDRP(NEXT_BLKP(bp))); // bp의 다음 블록 헤더 할당 비트
-    size_t size = GET_SIZE(HDRP(bp));                   // bp가 가리키는 현재 블록의 크기
+    size_t prev_alloc = GET_PREV_ALLOC(bp); // bp의 이전 블록 푸터 할당 비트
+    size_t next_alloc = GET_NEXT_ALLOC(bp); // bp의 다음 블록 헤더 할당 비트
+    size_t size = GET_SIZE(HDRP(bp));       // bp가 가리키는 현재 블록의 크기
 
     if (prev_alloc && next_alloc)
     {              // 둘 다 할당 블록이면
@@ -188,21 +208,21 @@ static void *coalesce(void *bp)
     }
     else if (prev_alloc && !next_alloc) // 다음 블록만 가용 블록이면
     {
-        size += GET_SIZE(HDRP(NEXT_BLKP(bp))); // 다음 블록을 병합하기 위해 다음 블록 사이즈도 추가
-        PUT(HDRP(bp), PACK(size, 0));          // 현재 블록의 헤더의 사이즈 비트 바꾸기
+        size += GET_NEXT_SIZE(bp);    // 다음 블록을 병합하기 위해 다음 블록 사이즈도 추가
+        PUT(HDRP(bp), PACK(size, 0)); // 현재 블록의 헤더의 사이즈 비트 바꾸기
         PUT(FTRP(bp), PACK(size, 0));
     }
     else if (!prev_alloc && next_alloc) // 이전 블록만 가용 블록이면
     {
-        size += GET_SIZE(HDRP(PREV_BLKP(bp)));   // 이전 블록의 헤더에서 사이즈 가져와서 더하기
+        size += GET_PREV_SIZE(bp);               // 이전 블록의 헤더에서 사이즈 가져와서 더하기
         PUT(FTRP(bp), PACK(size, 0));            // 현재 블록의 푸터에 새 사이즈 저장
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0)); // 이전 블록의 헤더에 새 사이즈 저장
         bp = PREV_BLKP(bp);                      // bp 포인터 옮기기
     }
     else
     {                                            // 이전, 다음 블록 모두 가용 블록이면
-        size += GET_SIZE(HDRP(NEXT_BLKP(bp)));   // 다음 블록 사이즈 더하기
-        size += GET_SIZE(HDRP(PREV_BLKP(bp)));   // 이전 블록 사이즈 더하기
+        size += GET_NEXT_SIZE(bp);               // 다음 블록 사이즈 더하기
+        size += GET_PREV_SIZE(bp);               // 이전 블록 사이즈 더하기
         PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0)); // 다음 블록 푸터에 새 사이즈 저장
         PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0)); // 이전 블록 헤더에 새 사이즈 저장
         bp = PREV_BLKP(bp);                      // bp 포인터 옮기기
@@ -212,7 +232,7 @@ static void *coalesce(void *bp)
 
 static void *find_fit(size_t asize) // first fit 구현
 {
-    char *bp = heap_listp + DSIZE;                           // heap_listp는 항상 프롤로그 블록의 중간
+    char *bp = heap_listp + 8;                               // heap_listp는 항상 프롤로그 블록의 중간
     while ((GET_SIZE(HDRP(bp)) | !GET_ALLOC(HDRP(bp))) != 0) // bp가 에필로그 블록이 아니면
     {
         size_t bp_size = GET_SIZE(HDRP(bp));
@@ -235,15 +255,27 @@ static void place(void *bp, size_t asize)
     size_t remain_size = bp_size - asize;
 
     if (remain_size >= 2 * DSIZE)
-    { // 최소 블록은 16바이트 이상 (헤더 + 푸터 + 페이로드 8바이트)
-        PUT(HDRP(bp), PACK(asize, 1));
-        PUT(FTRP(bp), PACK(asize, 1));
-        PUT(HDRP(NEXT_BLKP(bp)), PACK(remain_size, 0));
-        PUT(FTRP(NEXT_BLKP(bp)), PACK(remain_size, 0));
+    {                                                   // 최소 블록은 16바이트 이상 (헤더 + 푸터 + 페이로드 8바이트)
+        PUT(HDRP(bp), PACK(asize, 1));                  // 현재 헤드 사이즈 비트와 할당 비트 변경
+        PUT(FTRP(bp), PACK(asize, 1));                  // 현재 푸터 사이즈 비트와 할당 비트 변경
+        PUT(HDRP(NEXT_BLKP(bp)), PACK(remain_size, 0)); // 다음 블록 (위에서 변경되서 새로운 블록임) 헤더 변경
+        PUT(FTRP(NEXT_BLKP(bp)), PACK(remain_size, 0)); // 다음 블록 푸터 변경
     }
-    else
+    else // 최소 블록보다 작으면 블록 전체 사용
     {
         PUT(HDRP(bp), PACK(bp_size, 1));
         PUT(FTRP(bp), PACK(bp_size, 1));
     }
+}
+
+static size_t get_asize(size_t size)
+{
+    size_t asize;
+
+    if (size <= DSIZE)     // 만약 데이터가 8보다 작으면
+        asize = 2 * DSIZE; // 블록의 크기는 16 -> 헤더 8, 데이터 + 패딩 = 8
+    else
+        asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE); // ??뭐야이거
+
+    return asize;
 }
