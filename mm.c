@@ -171,8 +171,8 @@ void *mm_realloc(void *ptr, size_t size)
     if (new_ptr == NULL)
         return NULL;
 
-    size_t copy = old_payload < size ? old_payload : size; //
-    memmove(new_ptr, ptr, copy);                           /* ← 겹침 대비해 memmove */
+    size_t copy = old_payload < size ? old_payload : size; // 둘 중 더 작은 크기만 옮기기
+    memmove(new_ptr, ptr, copy);                           // 겹치지 않는 복사
 
     mm_free(ptr);
     return new_ptr;
