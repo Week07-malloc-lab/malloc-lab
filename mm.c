@@ -47,6 +47,7 @@ team_t team = {
 #define CHUNKSIZE (1 << 12) // 추가 할당될 힙 크기 (4KB?)
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
+#define MIN(x, y) ((x) < (y) ? (x) : (y))
 #define PACK(size, n_bit, p_bit, a_bit) (((size) & ~0x7) | ((p_bit) << 1) | ((n_bit) << 2) | (a_bit))
 
 // 헤더 주소 p를 받아서 size만 설정
@@ -84,12 +85,14 @@ team_t team = {
 static size_t translate_size(size_t size);         // 비트 연산으로 정렬
 static size_t get_aszie(size_t size);              // 크기 정렬
 static void *divide_block(int exponent, int dest); // 분할 후 할당
-static void *merge_buddy(unsigned int addr);       // 버디 병합
+static void *merge_buddy(void *bp, void *buddy);   // 버디 병합
 static void *extend_heap(size_t words);            // 힙 추가 할당
 static void *find_fit(size_t size);                // 가장 적절한 블록 찾기
 static unsigned int log2_pow2(size_t n);           // 이 사이즈가 몇 거듭제곱인지
 static unsigned int pow2_of_k(int k);              // 지수를 2의 거듭제곱으로 변환
 static void save_block(int exponet, char *bp);     // 해당 블록의 헤더 설정하고 리스트에 저장
+static void *find_my_buddy(void *bp);              // 버디 블록 찾기
+static int is_valid_area(void *p);                 // 유효한 주소인가?
 
 char *ava_list[14]; // 각 크기를 담을 리스트
 
@@ -99,7 +102,7 @@ char *ava_list[14]; // 각 크기를 담을 리스트
 int mm_init(void)
 {
     char *bp;
-    if (bp = (char *)extend_heap(CHUNKSIZE / WSIZE) == NULL)
+    if ((bp = (char *)extend_heap(CHUNKSIZE / WSIZE)) == NULL)
         return -1;
     return 0;
 }
@@ -107,8 +110,13 @@ int mm_init(void)
 void *mm_malloc(size_t size)
 {
     char *bp;
-    if ((bp = find_fit(size)) == NULL)
+    if ((bp = find_fit(size + INFOSIZE)) == NULL)
         return NULL;
+
+    SET_A_BIT(bp, 1);
+
+    SET_P_BIT(bp, 0);
+    SET_N_BIT(bp, 0);
 
     return GET_PAYLOAD(bp);
 }
@@ -118,6 +126,75 @@ void *mm_malloc(size_t size)
  */
 void mm_free(void *ptr)
 {
+    while (1)
+    {
+        void *buddy = find_my_buddy(ptr);
+
+        if (!is_valid_area(buddy))
+            break;
+        if (GET_A_BIT(buddy))
+            break;
+        if (GET_SIZE(ptr) != GET_SIZE(buddy))
+            break;
+
+        ptr = merge_buddy(ptr, buddy);
+    }
+
+    int exp = log2_pow2(GET_SIZE(ptr)) - MIN_K; // MIN_K == 4
+    save_block(exp, ptr);
+}
+
+static void *merge_buddy(void *bp, void *buddy)
+{
+    void *criteria_block = MIN(bp, buddy); // 버디와 bp 둘 중 주소가 작은 블록 기준
+
+    // 버디가 맨 앞일때
+    if (!GET_P_BIT(buddy))
+    {
+        int idx = log2_pow2(GET_SIZE(buddy)) - 4;
+        // 버디의 뒤에 리스트가 존재하면
+        if (GET_N_BIT(buddy))
+        {
+            char *next = NEXT_BLOCK_P(buddy);
+            SET_P_BIT(next, 0);
+            ava_list[idx] = next;
+        }
+        else // 버디 혼자 리스트에 있었다면
+        {
+            ava_list[idx] = NULL;
+        }
+    }
+    // 버디가 중간에 있을 때
+    else if ((GET_N_BIT(buddy) & GET_P_BIT(buddy)) == 1)
+    {
+        char *prev = PREV_BLOCK_P(buddy);
+        char *next = NEXT_BLOCK_P(buddy);
+
+        PUT_NEXT(prev, next);
+        PUT_PREV(next, prev);
+        SET_N_BIT(prev, 1);
+        SET_P_BIT(next, 1);
+    }
+    // 버디가 맨 뒤일때
+    else
+    {
+        char *prev = PREV_BLOCK_P(buddy);
+        SET_N_BIT(prev, 0);
+    }
+
+    PUT(criteria_block, PACK(GET_SIZE(bp) << 1, 0, 0, 0));
+    return criteria_block;
+}
+
+static void *find_my_buddy(void *bp)
+{
+    size_t size = GET_SIZE(bp); // 현재 블록의 size 가져오기
+    return (void *)((unsigned int)bp ^ size);
+}
+
+static int is_valid_area(void *bp)
+{
+    return (mem_heap_lo() <= bp && bp <= mem_heap_hi());
 }
 
 /*
@@ -177,8 +254,9 @@ static void *extend_heap(size_t words)
         return NULL;
 
     PUT(bp, PACK(size, 0, 0, 0)); // 헤더에 사이즈와 인코딩 비트 할당
-
-    return bp; // 새로 할당받은 힙의 시작 포인터 반환
+    int exp = log2_pow2(size) - MIN_K;
+    save_block(exp, bp); // ✅ ava_list에 새 블록을 저장
+    return bp;
 }
 
 static void *find_fit(size_t size)
@@ -190,12 +268,17 @@ static void *find_fit(size_t size)
 
     if (ava_list[idx] != NULL) // 해당 블록이 이미 가용 리스트에 존재하면
     {
-        bp = ava_list[0];
+        bp = ava_list[idx];
         if (GET_N_BIT(bp)) // 다음 블록이 있다면
         {
             char *next_bp = NEXT_BLOCK_P(bp);
             SET_P_BIT(next_bp, 0);
             SET_N_BIT(bp, 0);
+            ava_list[idx] = next_bp;
+        }
+        else
+        {
+            ava_list[idx] = NULL;
         }
     }
     else // 해당 블록이 가용 리스트에 존재하지 않는다면 탐색하기
@@ -210,8 +293,15 @@ static void *find_fit(size_t size)
                 break;
             }
         }
-        if (!flag)                           // 더 큰 블록이 가용 리스트에 존재하지 않음
-            bp = extend_heap(asize / WSIZE); // 리팩토링 필요 -> 페이지 단위로 할당받고 분할?
+        if (!flag) // 더 큰 블록이 가용 리스트에 존재하지 않음
+        {
+            // 항상 CHUNKSIZE로 확장
+            bp = extend_heap(CHUNKSIZE / WSIZE);
+
+            // 확장한 힙을 분할하여 asize 크기까지 맞춰서 사용
+            int chunk_exp = log2_pow2(CHUNKSIZE) - MIN_K;
+            bp = divide_block(chunk_exp, idx);
+        }
     }
 
     return bp;
@@ -237,6 +327,11 @@ static void *divide_block(int exponent, int dest)
 
         exponent -= 1;
     }
+
+    SET_A_BIT(bp, 1);
+    SET_P_BIT(bp, 0);
+    SET_N_BIT(bp, 0);
+    return bp;
 }
 
 static void save_block(int exponet, char *bp)
