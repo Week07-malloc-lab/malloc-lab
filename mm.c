@@ -14,6 +14,7 @@
 #include <assert.h>
 #include <unistd.h>
 #include <string.h>
+#include <stdint.h>
 
 #include "mm.h"
 #include "memlib.h"
@@ -304,6 +305,7 @@ static void *find_fit(size_t size)
         }
     }
 
+    PUT(bp, PACK(asize, 0, 0, 1));
     return bp;
 }
 
