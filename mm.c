@@ -1,5 +1,5 @@
 /*
- * mm-buddy.c - Buddy System based malloc lab
+ * mm-buddy.c - Buddy System based malloc lab (using heap-relative offsets)
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -59,14 +59,14 @@ team_t team = {
 #define MAX_K 17
 
 static size_t translate_size(size_t size);
-static size_t get_aszie(size_t size);
+static size_t get_asize(size_t size);
 static void *divide_block(int exponent, int dest);
 static void *merge_buddy(void *bp, void *buddy);
 static void *extend_heap(size_t words);
 static void *find_fit(size_t size);
 static unsigned int log2_pow2(size_t n);
 static unsigned int pow2_of_k(int k);
-static void save_block(int exponet, char *bp);
+static void save_block(int exponent, char *bp);
 static void *find_my_buddy(void *bp);
 static int is_valid_area(void *p);
 
@@ -74,6 +74,7 @@ char *ava_list[14];
 
 int mm_init(void)
 {
+    memset(ava_list, 0, sizeof(ava_list));
     char *bp;
     if ((bp = (char *)extend_heap(CHUNKSIZE / WSIZE)) == NULL)
         return -1;
@@ -113,55 +114,6 @@ void mm_free(void *ptr)
     save_block(exp, ptr);
 }
 
-static void *merge_buddy(void *bp, void *buddy)
-{
-    void *criteria_block = MIN(bp, buddy);
-
-    if (!GET_P_BIT(buddy))
-    {
-        int idx = log2_pow2(GET_SIZE(buddy)) - 4;
-        if (GET_N_BIT(buddy))
-        {
-            char *next = NEXT_BLOCK_P(buddy);
-            SET_P_BIT(next, 0);
-            ava_list[idx] = next;
-        }
-        else
-        {
-            ava_list[idx] = NULL;
-        }
-    }
-    else if ((GET_N_BIT(buddy) & GET_P_BIT(buddy)) == 1)
-    {
-        char *prev = PREV_BLOCK_P(buddy);
-        char *next = NEXT_BLOCK_P(buddy);
-
-        PUT_NEXT(prev, next);
-        PUT_PREV(next, prev);
-        SET_N_BIT(prev, 1);
-        SET_P_BIT(next, 1);
-    }
-    else
-    {
-        char *prev = PREV_BLOCK_P(buddy);
-        SET_N_BIT(prev, 0);
-    }
-
-    PUT(criteria_block, PACK(GET_SIZE(bp) << 1, 0, 0, 0));
-    return criteria_block;
-}
-
-static void *find_my_buddy(void *bp)
-{
-    size_t size = GET_SIZE(bp);
-    return (char *)mem_heap_lo() + (((unsigned int)((char *)bp - (char *)mem_heap_lo())) ^ size);
-}
-
-static int is_valid_area(void *bp)
-{
-    return (mem_heap_lo() <= (char *)bp && (char *)bp <= mem_heap_hi());
-}
-
 void *mm_realloc(void *ptr, size_t size)
 {
     void *oldptr = ptr;
@@ -171,37 +123,12 @@ void *mm_realloc(void *ptr, size_t size)
     newptr = mm_malloc(size);
     if (newptr == NULL)
         return NULL;
-
     copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
     if (size < copySize)
         copySize = size;
-
     memcpy(newptr, oldptr, copySize);
     mm_free(oldptr);
     return newptr;
-}
-
-static size_t translate_size(size_t size)
-{
-    if (size == 0)
-        return 1;
-    size--;
-    size |= size >> 1;
-    size |= size >> 2;
-    size |= size >> 4;
-    size |= size >> 8;
-    size |= size >> 16;
-    size++;
-    return size;
-}
-
-static size_t get_aszie(size_t size)
-{
-    if (size < (1 << 4))
-        size = (1 << 4);
-    if (size > (1 << 17))
-        size = (1 << 17);
-    return translate_size(size);
 }
 
 static void *extend_heap(size_t words)
@@ -223,98 +150,93 @@ static void *find_fit(size_t size)
 {
     char *bp = NULL;
 
-    size_t asize = get_aszie(size);
-    int idx = log2_pow2(asize) - 4;
+    size_t asize = get_asize(size);
+    int idx = log2_pow2(asize) - MIN_K;
 
-    if (ava_list[idx] != NULL)
+    for (int i = idx; i < 14; i++)
     {
-        bp = ava_list[idx];
-        if (GET_N_BIT(bp))
+        if (ava_list[i] != NULL)
         {
-            char *next_bp = NEXT_BLOCK_P(bp);
-            SET_P_BIT(next_bp, 0);
-            SET_N_BIT(bp, 0);
-            ava_list[idx] = next_bp;
-        }
-        else
-        {
-            ava_list[idx] = NULL;
-        }
-    }
-    else
-    {
-        int flag = 0;
-        for (int i = idx; i < 14; i++)
-        {
-            if (ava_list[i] != NULL)
-            {
-                bp = divide_block(i, idx);
-                flag = 1;
-                break;
-            }
-        }
-        if (!flag)
-        {
-            bp = extend_heap(CHUNKSIZE / WSIZE);
-            int chunk_exp = log2_pow2(CHUNKSIZE) - MIN_K;
-            bp = divide_block(chunk_exp, idx);
+            bp = divide_block(i, idx);
+            return bp;
         }
     }
 
-    PUT(bp, PACK(asize, 0, 0, 1));
-    return bp;
+    bp = extend_heap(CHUNKSIZE / WSIZE);
+    int chunk_exp = log2_pow2(CHUNKSIZE) - MIN_K;
+    return divide_block(chunk_exp, idx);
 }
 
 static void *divide_block(int exponent, int dest)
 {
     char *bp = ava_list[exponent];
-    if (GET_N_BIT(bp))
-    {
-        SET_N_BIT(bp, 0);
-        char *next_bp = NEXT_BLOCK_P(bp);
-        SET_P_BIT(next_bp, 0);
-        ava_list[exponent] = next_bp;
-    }
+    ava_list[exponent] = NEXT_BLOCK_P(bp);
 
     while (exponent > dest)
     {
-        char *buddy = bp + (GET_SIZE(bp) >> 1);
-        save_block(exponent - 1, buddy);
-        SET_SIZE(bp, GET_SIZE(bp) >> 1);
-        exponent -= 1;
+        exponent--;
+        char *buddy = bp + (1 << (exponent + MIN_K));
+        save_block(exponent, buddy);
+        SET_SIZE(bp, (1 << (exponent + MIN_K)));
     }
 
     SET_A_BIT(bp, 1);
-    SET_P_BIT(bp, 0);
-    SET_N_BIT(bp, 0);
     return bp;
 }
 
 static void save_block(int exponent, char *bp)
 {
-    if (ava_list[exponent] == NULL)
-    {
-        PUT(bp, PACK(pow2_of_k(exponent), 0, 0, 0));
-    }
-    else
-    {
-        char *first_bp = ava_list[exponent];
-        PUT(bp, PACK(pow2_of_k(exponent), 1, 0, 0));
-        PUT_NEXT(bp, first_bp);
-        SET_P_BIT(first_bp, 1);
-        PUT_PREV(first_bp, bp);
-    }
+    PUT(bp, PACK((1 << (exponent + MIN_K)), 0, 0, 0));
+    PUT_NEXT(bp, ava_list[exponent]);
     ava_list[exponent] = bp;
 }
 
-static unsigned int pow2_of_k(int k)
+static void *find_my_buddy(void *bp)
 {
-    return 1U << k;
+    size_t size = GET_SIZE(bp);
+    unsigned int offset = (unsigned int)((char *)bp - (char *)mem_heap_lo());
+    unsigned int buddy_offset = offset ^ size;
+    return (char *)mem_heap_lo() + buddy_offset;
+}
+
+static void *merge_buddy(void *bp, void *buddy)
+{
+    char *criteria_block = MIN(bp, buddy);
+    SET_SIZE(criteria_block, GET_SIZE(bp) << 1);
+    return criteria_block;
+}
+
+static int is_valid_area(void *bp)
+{
+    return (mem_heap_lo() <= (char *)bp && (char *)bp <= mem_heap_hi());
+}
+
+static size_t translate_size(size_t size)
+{
+    if (size == 0)
+        return 1;
+    size--;
+    size |= size >> 1;
+    size |= size >> 2;
+    size |= size >> 4;
+    size |= size >> 8;
+    size |= size >> 16;
+    size++;
+    return size;
+}
+
+static size_t get_asize(size_t size)
+{
+    if (size < (1 << 4))
+        size = (1 << 4);
+    if (size > (1 << 17))
+        size = (1 << 17);
+    return translate_size(size);
 }
 
 static unsigned int log2_pow2(size_t n)
 {
-    int k = 0;
+    unsigned int k = 0;
     while (n > 1)
     {
         n >>= 1;
