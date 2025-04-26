@@ -18,19 +18,22 @@
 #include "mm.h"
 #include "memlib.h"
 
+/*********************************************************
+ * NOTE TO STUDENTS: Before you do anything else, please
+ * provide your team information in the following struct.
+ ********************************************************/
 team_t team = {
     /* Team name */
-    "ateam",
+    "team 3",
     /* First member's full name */
-    "Harry Bovik",
+    "goochul-im",
     /* First member's email address */
-    "bovik@cs.cmu.edu",
+    "gooch123@naver.com",
     /* Second member's full name (leave blank if none) */
     "",
     /* Second member's email address (leave blank if none) */
     ""};
 
-/* 더블 워드 정렬 */
 #define ALIGNMENT 8
 
 /* 사이즈를 8의 배수로 올림 */
@@ -40,83 +43,74 @@ team_t team = {
 
 #define WSIZE 4
 #define DSIZE 8
+#define INFOSIZE 12
 #define CHUNKSIZE (1 << 12) // 추가 할당될 힙 크기 (4KB?)
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
-#define PACK(size, alloc) ((size) | (alloc)) // 헤더와 푸터에 저장할 정보를 만들어서 리턴
-                                             // 아마 alloc에는 0과 1만 넣어줘서 이 블록이 할당인지 가용인지 나타내는듯
+#define PACK(size, n_bit, p_bit, a_bit) (((size) & ~0x7) | ((p_bit) << 1) | ((n_bit) << 2) | (a_bit))
+
+// 헤더 주소 p를 받아서 size만 설정
+#define SET_SIZE(p, size) (GET(p) = (GET(p) & 0x7) | ((size) & ~0x7))
+
+// 헤더 주소 p를 받아서 a_bit만 설정
+#define SET_A_BIT(p, a_bit) (GET(p) = (GET(p) & ~0x1) | ((a_bit) & 0x1))
+
+// 헤더 주소 p를 받아서 p_bit만 설정
+#define SET_P_BIT(p, p_bit) (GET(p) = (GET(p) & ~0x2) | (((p_bit) & 0x1) << 1))
+
+// 헤더 주소 p를 받아서 n_bit만 설정
+#define SET_N_BIT(p, n_bit) (GET(p) = (GET(p) & ~0x4) | (((n_bit) & 0x1) << 2))
 
 #define GET(p) (*(unsigned int *)(p))              // 인자 p가 참조하는 워드를 읽어서 리턴
 #define PUT(p, val) (*(unsigned int *)(p) = (val)) // 인자 p가 가리키는 워드에 val 저장
 
-#define GET_SIZE(p) (GET(p) & ~0x7) // 헤더 or 푸터의 size 비트 리턴
-#define GET_ALLOC(p) (GET(p) & 0x1) // 헤더 or 푸터의 할당 비트 리턴
+#define GET_SIZE(p) (GET(p) & ~0x7)                       // 헤더의 사이즈 비트 리턴
+#define GET_A_BIT(p) (GET(p) & 0x1)                       // 헤더의 할당 비트 리턴
+#define GET_P_BIT(p) (GET(p) & 0x2)                       // 헤더의 RPEV 비트 리턴
+#define GET_N_BIT(p) (GET(p) & 0x4)                       // 헤더의 넥스트 비트 리턴
+#define GET_PAYLOAD(p) ((char *)(p) + DSIZE)              // 블록의 페이로드 주소 반환
+#define GET_NEXT_P(p) ((char *)(p) + GET_SIZE(p) - WSIZE) // 블록의 NEXT 워드 주소 반환
+#define GET_PREV_P(p) ((char *)(p) + WSIZE)               // 블록의 PREV 워드 주소 반환
 
-#define HDRP(bp) ((char *)(bp) - WSIZE)                      // 헤더를 가리키는 포인터 리턴
-#define FTRP(bp) ((char *)(bp) + GET_SIZE(HDRP(bp)) - DSIZE) // 푸터를 가리키는 포인터 리턴
+#define PUT_PREV(p, addr) (PUT(GET_PREV_P(p), (addr))) // 블록의 PREV 워드에 주소 저장
+#define PUT_NEXT(p, addr) (PUT(GET_NEXT_P(p), (addr))) // 블록의 NEXT 워드에 주소 저장
 
-#define NEXT_BLKP(bp) ((char *)(bp) + GET_SIZE(((char *)(bp) - WSIZE))) // 다음 블록의 시작 포인터 리턴
-#define PREV_BLKP(bp) ((char *)(bp) - GET_SIZE(((char *)(bp) - DSIZE))) // 이전 블록의 시작 포인터 리턴
+#define NEXT_BLOCK_P(bp) ((void *)GET(GET_NEXT_P(bp))) // 다음 블록의 시작 포인터 리턴
+#define PREV_BLOCK_P(bp) ((void *)GET(GET_PREV_P(bp))) // 이전 블록의 시작 포인터 리턴
 
-#define GET_PREV_ALLOC(bp) (GET_ALLOC(FTRP(PREV_BLKP(bp))))
-#define GET_NEXT_ALLOC(bp) (GET_ALLOC(HDRP(NEXT_BLKP(bp))))
-#define GET_NEXT_SIZE(bp) (GET_SIZE(HDRP(NEXT_BLKP(bp))))
-#define GET_PREV_SIZE(bp) (GET_SIZE(HDRP(PREV_BLKP(bp))))
-#define GET_CUR_SIZE(bp) (GET_SIZE(HDRP(bp)))
+#define MIN_K 4  // 최소 2^4 바이트
+#define MAX_K 17 // 최대 2^17 바이트
 
-static void *extend_heap(size_t words);
-static void *coalesce(void *bp);
-static void *find_fit(size_t asize);       // first fit으로 적절한 가용 블록 리턴
-static void place(void *bp, size_t asize); // 남은 블록 분할
-static size_t get_asize(size_t size);
-static char *heap_listp;
+static size_t translate_size(size_t size);         // 비트 연산으로 정렬
+static size_t get_aszie(size_t size);              // 크기 정렬
+static void *divide_block(int exponent, int dest); // 분할 후 할당
+static void *merge_buddy(unsigned int addr);       // 버디 병합
+static void *extend_heap(size_t words);            // 힙 추가 할당
+static void *find_fit(size_t size);                // 가장 적절한 블록 찾기
+static unsigned int log2_pow2(size_t n);           // 이 사이즈가 몇 거듭제곱인지
+static unsigned int pow2_of_k(int k);              // 지수를 2의 거듭제곱으로 변환
+static void save_block(int exponet, char *bp);     // 해당 블록의 헤더 설정하고 리스트에 저장
+
+char *ava_list[14]; // 각 크기를 담을 리스트
 
 /*
  * mm_init - initialize the malloc package.
  */
 int mm_init(void)
 {
-    if ((heap_listp = mem_sbrk(4 * WSIZE)) == (void *)-1)
-        return -1;
-
-    PUT(heap_listp, 0);                            // 초기화 패딩 블록
-    PUT(heap_listp + (1 * WSIZE), PACK(DSIZE, 1)); // 프롤로그 블록의 헤더
-    // 왜 DSIZE인가? 프롤로그 블록은 헤더 + 푸터로 2워드 크기이기 때문에
-    PUT(heap_listp + (2 * WSIZE), PACK(DSIZE, 1)); // 프롤로그 블록의 푸터
-    PUT(heap_listp + (3 * WSIZE), PACK(0, 1));     // 에필로그 블록
-    heap_listp += (2 * WSIZE);
-
-    if (extend_heap(CHUNKSIZE / WSIZE) == NULL)
+    char *bp;
+    if (bp = (char *)extend_heap(CHUNKSIZE / WSIZE) == NULL)
         return -1;
     return 0;
 }
 
-/*
- * mm_malloc - Allocate a block by incrementing the brk pointer.
- *     Always allocate a block whose size is a multiple of the alignment.
- */
 void *mm_malloc(size_t size)
 {
-    size_t asize; // 정렬 사이즈
-    size_t extend_size;
     char *bp;
-
-    if (size == 0)
+    if ((bp = find_fit(size)) == NULL)
         return NULL;
 
-    asize = get_asize(size);
-
-    if ((bp = find_fit(asize)) != NULL) // 묵시적 가용 리스트에서 적절한 블록을 할당해주고
-    {
-        place(bp, asize); // 해당 가용 블록을 할당해주고
-        return bp;
-    }
-    // 적절한 가용 블록을 찾지 못했으면
-    extend_size = MAX(asize, CHUNKSIZE);                 // 힙 영역을 확장
-    if ((bp = extend_heap(extend_size / WSIZE)) == NULL) // WSIZE로 나누어주는 이유는 워드 단위로 인자를 받기 때문
-        return NULL;                                     // extend_heap에서 병합을 수행하기 때문에 기존 가용의 끝부터 할당
-    place(bp, asize);
-    return bp;
+    return GET_PAYLOAD(bp);
 }
 
 /*
@@ -124,12 +118,6 @@ void *mm_malloc(size_t size)
  */
 void mm_free(void *ptr)
 {
-    size_t size = GET_SIZE(HDRP(ptr));
-
-    PUT(HDRP(ptr), PACK(size, 0)); // 해당 블록의 헤더 할당 비트를 0으로
-    PUT(FTRP(ptr), PACK(size, 0)); // 해당 블록의 푸터 할당 비트를 0으로
-
-    coalesce(ptr);
 }
 
 /*
@@ -137,45 +125,45 @@ void mm_free(void *ptr)
  */
 void *mm_realloc(void *ptr, size_t size)
 {
-    if (ptr == NULL)
-        return mm_malloc(size);
+    void *oldptr = ptr;
+    void *newptr;
+    size_t copySize;
+
+    newptr = mm_malloc(size);
+    if (newptr == NULL)
+        return NULL;
+    copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
+    if (size < copySize)
+        copySize = size;
+    memcpy(newptr, oldptr, copySize);
+    mm_free(oldptr);
+    return newptr;
+}
+
+static size_t translate_size(size_t size)
+{
     if (size == 0)
-    {
-        mm_free(ptr);
-        return NULL;
-    }
+        return 1; // 0의 경우는 특별히 2^0 == 1로 취급
 
-    size_t old_block = GET_SIZE(HDRP(ptr)); // 헤더+푸터 포함
-    size_t old_payload = old_block - DSIZE; // 페이로드의 크기 -> 옮겨야 할 데이터
-    size_t new_asize = get_asize(size);     // 정렬 + 오버헤드 포함
+    size--; // 경계 처리 (n이 이미 2^k일 때 변환을 막음)
+    size |= size >> 1;
+    size |= size >> 2;
+    size |= size >> 4;
+    size |= size >> 8;
+    size |= size >> 16;
+    size++; // 다음 2^k로 올림
 
-    if (new_asize <= old_block) /* 1) 새 크기가 더 작거나 같으면 분할/그대로 사용 */
-    {
-        place(ptr, new_asize);
-        return ptr; /* in-place, 주소 유지 */
-    }
+    return size;
+}
 
-    /* 2) 오른쪽 블록을 붙여서 키울 수 있나? */
-    if (!GET_NEXT_ALLOC(ptr) &&
-        old_block + GET_NEXT_SIZE(ptr) >= new_asize)
-    {
+static size_t get_aszie(size_t size)
+{
+    if (size < (1 << 4))
+        size = (1 << 4); // 최소 16바이트로 강제
+    if (size > (1 << 17))
+        size = (1 << 17); // 최대 2^17(131072)로 강제 (선택사항)
 
-        size_t total = old_block + GET_NEXT_SIZE(ptr);
-        PUT(HDRP(ptr), PACK(total, 1));
-        PUT(FTRP(ptr), PACK(total, 1));
-        return ptr; /* 역시 in-place */
-    }
-
-    /* 3) 새 블록을 할당해서 옮긴다 */
-    void *new_ptr = mm_malloc(size);
-    if (new_ptr == NULL)
-        return NULL;
-
-    size_t copy = old_payload < size ? old_payload : size; // 둘 중 더 작은 크기만 옮기기
-    memmove(new_ptr, ptr, copy);                           // 겹치지 않는 복사
-
-    mm_free(ptr);
-    return new_ptr;
+    return translate_size(size);
 }
 
 static void *extend_heap(size_t words)
@@ -188,94 +176,100 @@ static void *extend_heap(size_t words)
     if ((long)(bp = mem_sbrk(size)) == -1)                    // 사이즈만큼 힙 영역에서 더 할당한 다음 bp에 시작 포인터 반환
         return NULL;
 
-    PUT(HDRP(bp), PACK(size, 0));         // 가용 블록 헤더
-    PUT(FTRP(bp), PACK(size, 0));         // 가용 블록 푸터
-    PUT(HDRP(NEXT_BLKP(bp)), PACK(0, 1)); // NEXT_BLKP로 bp 블록의 다음 포인터 받아서, HDRP로 그 블록의 헤더를 받고, PACK으로
-                                          // 에필로그 정보를 만든다음, PUT으로 그 정보를 저장
+    PUT(bp, PACK(size, 0, 0, 0)); // 헤더에 사이즈와 인코딩 비트 할당
 
-    return coalesce(bp); // 원래 가용 리스트의 끝이 가용 블록이었을 수도 있으니까 병합해서 리턴해주기
+    return bp; // 새로 할당받은 힙의 시작 포인터 반환
 }
 
-static void *coalesce(void *bp)
+static void *find_fit(size_t size)
 {
-    size_t prev_alloc = GET_PREV_ALLOC(bp); // bp의 이전 블록 푸터 할당 비트
-    size_t next_alloc = GET_NEXT_ALLOC(bp); // bp의 다음 블록 헤더 할당 비트
-    size_t size = GET_SIZE(HDRP(bp));       // bp가 가리키는 현재 블록의 크기
+    char *bp = NULL;
 
-    if (prev_alloc && next_alloc)
-    {              // 둘 다 할당 블록이면
-        return bp; // 현재 블록 포인터만 반환
-    }
-    else if (prev_alloc && !next_alloc) // 다음 블록만 가용 블록이면
+    size_t asize = get_aszie(size); // 사이즈를 2의 거듭제곱으로 변환
+    int idx = log2_pow2(asize) - 4; // 이 사이즈가 2의 몇 거듭제곱인지
+
+    if (ava_list[idx] != NULL) // 해당 블록이 이미 가용 리스트에 존재하면
     {
-        size += GET_NEXT_SIZE(bp);    // 다음 블록을 병합하기 위해 다음 블록 사이즈도 추가
-        PUT(HDRP(bp), PACK(size, 0)); // 현재 블록의 헤더의 사이즈 비트 바꾸기
-        PUT(FTRP(bp), PACK(size, 0));
+        bp = ava_list[0];
+        if (GET_N_BIT(bp)) // 다음 블록이 있다면
+        {
+            char *next_bp = NEXT_BLOCK_P(bp);
+            SET_P_BIT(next_bp, 0);
+            SET_N_BIT(bp, 0);
+        }
     }
-    else if (!prev_alloc && next_alloc) // 이전 블록만 가용 블록이면
+    else // 해당 블록이 가용 리스트에 존재하지 않는다면 탐색하기
     {
-        size += GET_PREV_SIZE(bp);               // 이전 블록의 헤더에서 사이즈 가져와서 더하기
-        PUT(FTRP(bp), PACK(size, 0));            // 현재 블록의 푸터에 새 사이즈 저장
-        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0)); // 이전 블록의 헤더에 새 사이즈 저장
-        bp = PREV_BLKP(bp);                      // bp 포인터 옮기기
+        int flag = 0;
+        for (int i = idx; i < 14; i++)
+        {
+            if (ava_list[i] != NULL)
+            {
+                bp = divide_block(i, idx);
+                flag = 1;
+                break;
+            }
+        }
+        if (!flag)                           // 더 큰 블록이 가용 리스트에 존재하지 않음
+            bp = extend_heap(asize / WSIZE); // 리팩토링 필요 -> 페이지 단위로 할당받고 분할?
     }
-    else
-    {                                            // 이전, 다음 블록 모두 가용 블록이면
-        size += GET_NEXT_SIZE(bp);               // 다음 블록 사이즈 더하기
-        size += GET_PREV_SIZE(bp);               // 이전 블록 사이즈 더하기
-        PUT(FTRP(NEXT_BLKP(bp)), PACK(size, 0)); // 다음 블록 푸터에 새 사이즈 저장
-        PUT(HDRP(PREV_BLKP(bp)), PACK(size, 0)); // 이전 블록 헤더에 새 사이즈 저장
-        bp = PREV_BLKP(bp);                      // bp 포인터 옮기기
-    }
+
     return bp;
 }
 
-static void *find_fit(size_t asize) // first fit 구현
+static void *divide_block(int exponent, int dest)
 {
-    char *bp = heap_listp + 8;                               // heap_listp는 항상 프롤로그 블록의 중간
-    while ((GET_SIZE(HDRP(bp)) | !GET_ALLOC(HDRP(bp))) != 0) // bp가 에필로그 블록이 아니면
+    char *bp = ava_list[exponent]; // 분할할 블록
+    if (GET_N_BIT(bp))             // 다음 블록이 만약에 있다면
     {
-        size_t bp_size = GET_SIZE(HDRP(bp));
-        int alloc = GET_ALLOC(HDRP(bp));
-        if (alloc == 1 || bp_size < asize)
-        {
-            bp += bp_size;
-            continue;
-        }
-
-        return bp;
+        SET_N_BIT(bp, 0);                 // 연결 끊기
+        char *next_bp = NEXT_BLOCK_P(bp); // 다음 블록 저장
+        SET_P_BIT(next_bp, 0);            // 다음 블록의 P 비트 0
+        ava_list[exponent] = next_bp;     // 리스트의 맨 처음은 다음 블록
     }
 
-    return NULL;
-}
-
-static void place(void *bp, size_t asize)
-{
-    size_t bp_size = GET_SIZE(HDRP(bp)); // 현재 블록 사이즈
-    size_t remain_size = bp_size - asize;
-
-    if (remain_size >= 2 * DSIZE)
-    {                                                   // 최소 블록은 16바이트 이상 (헤더 + 푸터 + 페이로드 8바이트)
-        PUT(HDRP(bp), PACK(asize, 1));                  // 현재 헤드 사이즈 비트와 할당 비트 변경
-        PUT(FTRP(bp), PACK(asize, 1));                  // 현재 푸터 사이즈 비트와 할당 비트 변경
-        PUT(HDRP(NEXT_BLKP(bp)), PACK(remain_size, 0)); // 다음 블록 (위에서 변경되서 새로운 블록임) 헤더 변경
-        PUT(FTRP(NEXT_BLKP(bp)), PACK(remain_size, 0)); // 다음 블록 푸터 변경
-    }
-    else // 최소 블록보다 작으면 블록 전체 사용
+    // TODO: 블록 분할해서 bp + size/2 블록은 리스트에 새로 등록
+    while (exponent > dest)
     {
-        PUT(HDRP(bp), PACK(bp_size, 1));
-        PUT(FTRP(bp), PACK(bp_size, 1));
+        char *buddy = bp + (GET_SIZE(bp) >> 1); // 버디 분할
+        save_block(exponent - 1, buddy);        // 버디를 리스트에 저장
+        SET_SIZE(bp, GET_SIZE(bp) >> 1);        // 현재 블록의 헤더에서 사이즈 절반으로 SET
+
+        exponent -= 1;
     }
 }
 
-static size_t get_asize(size_t size)
+static void save_block(int exponet, char *bp)
 {
-    size_t asize;
+    if (ava_list[exponet] == NULL) // 리스트에 아무것도 없으면
+    {
+        PUT(bp, PACK(pow2_of_k(exponet), 0, 0, 0)); // 블록의 헤더 설정
+    }
+    else // 리스트에 이미 블록들이 있으면
+    {
+        char *fisrt_bp = ava_list[exponet];         // 리스트의 첫번째 블록
+        PUT(bp, PACK(pow2_of_k(exponet), 1, 0, 0)); // 블록의 헤더 설정, NEXT 비트 1로 설정
+        PUT_NEXT(bp, fisrt_bp);                     // NEXT 워드에 fisrt 블록 설정
+        SET_P_BIT(fisrt_bp, 1);                     // first 블록의 P 비트 설정
+        PUT_PREV(fisrt_bp, bp);                     // first 블록의 PREV 워드에 bp 블록 설정
+    }
+    ava_list[exponet] = bp; // 리스트의 첫번째에 bp 설정
+}
 
-    if (size <= DSIZE)     // 만약 데이터가 8보다 작으면
-        asize = 2 * DSIZE; // 블록의 크기는 16 -> 헤더 8, 데이터 + 패딩 = 8
-    else
-        asize = DSIZE * ((size + (DSIZE) + (DSIZE - 1)) / DSIZE); // ??뭐야이거
+static unsigned int pow2_of_k(int k)
+{
+    return 1U << k;
+}
 
-    return asize;
+static unsigned int log2_pow2(size_t n)
+{
+    int k = 0;
+
+    while (n > 1)
+    {
+        n >>= 1; // 오른쪽으로 1비트 이동 (나누기 2)
+        k++;
+    }
+
+    return k;
 }
