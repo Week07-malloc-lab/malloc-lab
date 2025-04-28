@@ -1,11 +1,11 @@
 {
+    "version": "2.0.0",
     "tasks": [
         {
-            "type": "cppbuild",
-            "label": "C/C++: gcc 활성 파일 빌드",
+            "type": "shell",
+            "label": "C/C++: gcc build active file",
             "command": "/usr/bin/gcc",
             "args": [
-                "-fdiagnostics-color=always",
                 "-g",
                 "${file}",
                 "-o",
@@ -21,8 +21,34 @@
                 "kind": "build",
                 "isDefault": true
             },
-            "detail": "디버거에서 생성된 작업입니다."
+            "detail": "컴파일러: /usr/bin/gcc"
+        },
+        {
+            "label": "Clean",
+            "type": "shell",
+            "command": "make clean",
+            "args": [],
+            "group": "build",
+            "problemMatcher": [],
+            "options": {
+                "cwd": "${workspaceFolder}/"
+            }
+        },
+        {
+            "label": "Build mdriver",
+            "type": "shell",
+            "command": "make",
+            "args": [],
+            "group": "build",
+            "dependsOn": [
+                "Clean"
+            ],
+            "problemMatcher": [
+                "$gcc"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}/"
+            }
         }
-    ],
-    "version": "2.0.0"
+    ]
 }
