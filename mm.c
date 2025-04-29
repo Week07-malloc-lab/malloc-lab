@@ -45,7 +45,7 @@ team_t team = {
 #define WSIZE 4
 #define DSIZE 8
 #define INFOSIZE 12
-#define CHUNKSIZE (1 << 17) // 추가 할당될 힙 크기 (최대 128KB)
+#define CHUNKSIZE (1 << 12) // 추가 할당될 힙 크기 (최대 128KB)
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
