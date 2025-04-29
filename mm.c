@@ -45,7 +45,7 @@ team_t team = {
 #define WSIZE 4
 #define DSIZE 8
 #define INFOSIZE 12
-#define CHUNKSIZE (1 << 12) // 추가 할당될 힙 크기 (최대 128KB)
+#define CHUNKSIZE (1 << 17) // 추가 할당될 힙 크기 (최대 128KB)
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
@@ -120,6 +120,15 @@ void *mm_malloc(size_t size)
     SET_P_BIT(bp, 0);
     SET_N_BIT(bp, 0);
 
+    // if (!is_valid_area(bp) || !is_valid_area(bp + GET_SIZE(bp)))
+    // {
+    //     printf("\n%d번째 할당\n", cnt);
+    //     printf("힙 영역을 벗어났습니다!!\nbp = %p ~ %p\n힙 시작 = %p\n힙 끝 = %p\n", bp, bp + GET_SIZE(bp), mem_heap_lo(), mem_heap_hi());
+    //     printf("블록 크기 : %d, 힙 영역 크기 : %d\n", GET_SIZE(bp), mem_heap_hi() - mem_heap_lo());
+    //     printf("현재 요청한 사이즈 : %d\n", size);
+    //     return NULL;
+    // }
+
     return GET_PAYLOAD(bp);
 }
 
@@ -129,6 +138,11 @@ void *mm_malloc(size_t size)
 void mm_free(void *ptr)
 {
     ptr = ptr - DSIZE;
+    if ((int)ptr % 8 != 0)
+    {
+        printf("ptr이 8의 배수가 아닙니다 !!\n");
+    }
+
     while (1)
     {
         void *buddy = find_my_buddy(ptr);
@@ -144,6 +158,13 @@ void mm_free(void *ptr)
     }
 
     int exp = log2_pow2(GET_SIZE(ptr)) - MIN_K; // MIN_K == 4
+
+    if (exp > 13)
+    {
+        printf("SIZE ERROR");
+        return;
+    }
+
     save_block(exp, ptr);
 }
 
@@ -258,7 +279,7 @@ static void *extend_heap(size_t words)
 
     PUT(bp, PACK(size, 0, 0, 0)); // 헤더에 사이즈와 인코딩 비트 할당
     int exp = log2_pow2(size) - MIN_K;
-    save_block(exp, bp); // ✅ ava_list에 새 블록을 저장
+    save_block(exp, bp); // ava_list에 새 블록을 저장
     return bp;
 }
 
