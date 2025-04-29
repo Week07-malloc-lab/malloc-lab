@@ -45,7 +45,7 @@ team_t team = {
 #define WSIZE 4
 #define DSIZE 8
 #define INFOSIZE 12
-#define CHUNKSIZE (1 << 17) // 추가 할당될 힙 크기 (최대 128KB)
+#define CHUNKSIZE (1 << 12) // 추가 할당될 힙 크기 (최대 128KB)
 
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
@@ -113,6 +113,7 @@ void *mm_malloc(size_t size)
     char *bp;
     if ((bp = find_fit(size + INFOSIZE)) == NULL)
         return NULL;
+    // printf("bp 값 : %p, heap_low : %p, heap_high : %p", bp, mem_heap_lo(), mem_heap_hi);
 
     SET_A_BIT(bp, 1);
 
@@ -329,9 +330,11 @@ static void *divide_block(int exponent, int dest)
     while (exponent > dest)
     {
         char *buddy = bp + (GET_SIZE(bp) >> 1); // 버디 분할
-        save_block(exponent - 1, buddy);        // 버디를 리스트에 저장
-        SET_SIZE(bp, GET_SIZE(bp) >> 1);        // 현재 블록의 헤더에서 사이즈 절반으로 SET
+        size_t half = GET_SIZE(bp) >> 1;
+        PUT(buddy, PACK(half, 0, 0, 0)); // ← buddy 헤더
+        SET_SIZE(bp, half);              // ← 앞쪽 블록 헤더
 
+        save_block(exponent - 1, buddy); // 버디를 리스트에 저장
         exponent -= 1;
     }
 
@@ -349,11 +352,11 @@ static void save_block(int exponet, char *bp)
     }
     else // 리스트에 이미 블록들이 있으면
     {
-        char *fisrt_bp = ava_list[exponet];         // 리스트의 첫번째 블록
-        PUT(bp, PACK(pow2_of_k(exponet), 1, 0, 0)); // 블록의 헤더 설정, NEXT 비트 1로 설정
-        PUT_NEXT(bp, fisrt_bp);                     // NEXT 워드에 fisrt 블록 설정
-        SET_P_BIT(fisrt_bp, 1);                     // first 블록의 P 비트 설정
-        PUT_PREV(fisrt_bp, bp);                     // first 블록의 PREV 워드에 bp 블록 설정
+        char *fisrt_bp = ava_list[exponet];                 // 리스트의 첫번째 블록
+        PUT(bp, PACK(pow2_of_k(exponet + MIN_K), 1, 0, 0)); // 블록의 헤더 설정, NEXT 비트 1로 설정
+        PUT_NEXT(bp, fisrt_bp);                             // NEXT 워드에 fisrt 블록 설정
+        SET_P_BIT(fisrt_bp, 1);                             // first 블록의 P 비트 설정
+        PUT_PREV(fisrt_bp, bp);                             // first 블록의 PREV 워드에 bp 블록 설정
     }
     ava_list[exponet] = bp; // 리스트의 첫번째에 bp 설정
 }
