@@ -82,9 +82,10 @@ team_t team = {
 
 #define MIN_K 4  // 최소 2^4 바이트
 #define MAX_K 17 // 최대 2^17 바이트
+#define MAX_IDX 18
 
 static size_t translate_size(size_t size);         // 비트 연산으로 정렬
-static size_t get_aszie(size_t size);              // 크기 정렬
+static size_t get_asize(size_t size);              // 크기 정렬
 static void *divide_block(int exponent, int dest); // 분할 후 할당
 static void *merge_buddy(void *bp, void *buddy);   // 버디 병합
 static void *extend_heap(size_t words);            // 힙 추가 할당
@@ -94,8 +95,10 @@ static unsigned int pow2_of_k(int k);              // 지수를 2의 거듭제�
 static void save_block(int exponet, char *bp);     // 해당 블록의 헤더 설정하고 리스트에 저장
 static void *find_my_buddy(void *bp);              // 버디 블록 찾기
 static int is_valid_area(void *p);                 // 유효한 주소인가?
+static void print_log(void *ptr);
+static void print_err_log(void *ptr);
 
-char *ava_list[14]; // 각 크기를 담을 리스트
+char *ava_list[MAX_IDX]; // 각 크기를 담을 리스트
 
 /*
  * mm_init - initialize the malloc package.
@@ -103,6 +106,13 @@ char *ava_list[14]; // 각 크기를 담을 리스트
 int mm_init(void)
 {
     char *bp;
+    for (int i = 0; i < MAX_IDX; i++)
+    {
+        ava_list[i] = NULL;
+    }
+    printf("mm_init==========================\n");
+    printf("MM_INITIALIZE\n");
+    printf("================================\n");
     if ((bp = (char *)extend_heap(CHUNKSIZE / WSIZE)) == NULL)
         return -1;
     return 0;
@@ -113,22 +123,17 @@ void *mm_malloc(size_t size)
     char *bp;
     if ((bp = find_fit(size + INFOSIZE)) == NULL)
         return NULL;
-    // printf("bp 값 : %p, heap_low : %p, heap_high : %p", bp, mem_heap_lo(), mem_heap_hi);
+    printf("mm_malloc=========================\n");
+    print_log(bp);
+    print_err_log(bp);
+    printf("================================\n");
 
     SET_A_BIT(bp, 1);
-
     SET_P_BIT(bp, 0);
     SET_N_BIT(bp, 0);
 
     int heap_size = mem_heap_hi() - mem_heap_lo();
     int bp_size = GET_SIZE(bp);
-    // if (!is_valid_area(bp) || !is_valid_area(bp + GET_SIZE(bp)))
-    // {
-    //     printf("힙 영역을 벗어났습니다!!\nbp = %p ~ %p\n힙 시작 = %p\n힙 끝 = %p\n", bp, bp + GET_SIZE(bp), mem_heap_lo(), mem_heap_hi());
-    //     printf("블록 크기 : %d, 힙 영역 크기 : %d\n", GET_SIZE(bp), mem_heap_hi() - mem_heap_lo());
-    //     printf("현재 요청한 사이즈 : %d\n", size);
-    //     return NULL;
-    // }
 
     return GET_PAYLOAD(bp);
 }
@@ -143,6 +148,11 @@ void mm_free(void *ptr)
     {
         printf("ptr이 8의 배수가 아닙니다 !!\n");
     }
+
+    // printf("mm_free=========================\n");
+    // print_log(ptr);
+    // print_err_log(ptr);
+    // printf("================================\n");
 
     while (1)
     {
@@ -160,10 +170,13 @@ void mm_free(void *ptr)
 
     int exp = log2_pow2(GET_SIZE(ptr)) - MIN_K; // MIN_K == 4
 
-    if (exp > 13)
+    if (exp > MAX_IDX)
     {
-        printf("SIZE ERROR");
-        return;
+        printf("SIZE ERROR==========\n");
+        printf("exp = %d\n", exp);
+        printf("size = %d\n", GET_SIZE(ptr));
+        printf("====================\n");
+        // return;
     }
 
     save_block(exp, ptr);
@@ -227,19 +240,29 @@ static int is_valid_area(void *bp)
  */
 void *mm_realloc(void *ptr, size_t size)
 {
-    void *oldptr = ptr;
+    void *oldptr = ptr - DSIZE;
     void *newptr;
     size_t copySize;
+    size_t old_size = GET_SIZE(oldptr);
+    size = get_asize(size + INFOSIZE);
 
-    newptr = mm_malloc(size);
+    printf("mm_realloc=========================\n");
+    print_log(oldptr);
+    printf("재요청받은 사이즈 %d\n", size);
+    printf("================================\n");
+
+    if (old_size == size)
+        return GET_PAYLOAD(oldptr);
+
+    newptr = mm_malloc(size - INFOSIZE) - DSIZE;
     if (newptr == NULL)
         return NULL;
-    copySize = *(size_t *)((char *)oldptr - SIZE_T_SIZE);
+    copySize = GET_SIZE(oldptr) - INFOSIZE;
     if (size < copySize)
         copySize = size;
-    memcpy(newptr, oldptr, copySize);
-    mm_free(oldptr);
-    return newptr;
+    // memmove(newptr + DSIZE, oldptr + DSIZE, copySize);
+    mm_free(GET_PAYLOAD(oldptr));
+    return GET_PAYLOAD(newptr);
 }
 
 static size_t translate_size(size_t size)
@@ -258,7 +281,7 @@ static size_t translate_size(size_t size)
     return size;
 }
 
-static size_t get_aszie(size_t size)
+static size_t get_asize(size_t size)
 {
     if (size < (1 << 4))
         size = (1 << 4); // 최소 16바이트로 강제
@@ -278,9 +301,19 @@ static void *extend_heap(size_t words)
     if ((long)(bp = mem_sbrk(size)) == -1)                    // 사이즈만큼 힙 영역에서 더 할당한 다음 bp에 시작 포인터 반환
         return NULL;
 
+    if ((void *)(bp + size - 1) > mem_heap_hi())
+    {
+        printf("mem_sbrk returned, but heap not large enough!\n");
+        return NULL;
+    }
+
     int heap_size = mem_heap_hi() - mem_heap_lo();
     PUT(bp, PACK(size, 0, 0, 0)); // 헤더에 사이즈와 인코딩 비트 할당
     int exp = log2_pow2(size) - MIN_K;
+    printf("extend_heap=========================\n");
+    print_log(bp);
+    printf("확장할 사이즈 %d\n", size);
+    printf("================================\n");
     save_block(exp, bp); // ava_list에 새 블록을 저장
     return bp;
 }
@@ -289,7 +322,7 @@ static void *find_fit(size_t size)
 {
     char *bp = NULL;
 
-    size_t asize = get_aszie(size); // 사이즈를 2의 거듭제곱으로 변환
+    size_t asize = get_asize(size); // 사이즈를 2의 거듭제곱으로 변환
     int idx = log2_pow2(asize) - 4; // 이 사이즈가 2의 몇 거듭제곱인지
 
     if (ava_list[idx] != NULL) // 해당 블록이 이미 가용 리스트에 존재하면
@@ -322,10 +355,11 @@ static void *find_fit(size_t size)
         if (!flag) // 더 큰 블록이 가용 리스트에 존재하지 않음
         {
             // 항상 CHUNKSIZE로 확장
-            bp = extend_heap(CHUNKSIZE / WSIZE);
+            size_t extend_size = MAX(asize, CHUNKSIZE);
+            bp = extend_heap(extend_size / WSIZE);
 
             // 확장한 힙을 분할하여 asize 크기까지 맞춰서 사용
-            int chunk_exp = log2_pow2(CHUNKSIZE) - MIN_K;
+            int chunk_exp = log2_pow2(extend_size) - MIN_K;
             bp = divide_block(chunk_exp, idx);
         }
     }
@@ -382,6 +416,10 @@ static void save_block(int exponet, char *bp)
         PUT_PREV(fisrt_bp, bp);                             // first 블록의 PREV 워드에 bp 블록 설정
     }
     ava_list[exponet] = bp; // 리스트의 첫번째에 bp 설정
+    printf("save_block=========================\n");
+    print_log(bp);
+    printf("리스트에 저장한 사이즈 %d\n", GET_SIZE(bp));
+    printf("================================\n");
 }
 
 static unsigned int pow2_of_k(int k)
@@ -400,4 +438,22 @@ static unsigned int log2_pow2(size_t n)
     }
 
     return k;
+}
+
+static void print_log(void *ptr)
+{
+    printf("현재 포인터 : %p\n", ptr);
+    printf("현재 블록의 크기 : %d\n", GET_SIZE(ptr));
+    printf("현재 블록의 끝 포인터 : %p\n", (int *)ptr + GET_SIZE(ptr));
+    printf("현재 힙 시작 영역 : %p\n", mem_heap_lo());
+    printf("현재 힙 끝 영역 : %p\n", mem_heap_hi());
+}
+
+static void print_err_log(void *ptr)
+{
+    if (!is_valid_area(ptr) || !is_valid_area(ptr + GET_SIZE(ptr)))
+    {
+        printf("힙 영역을 벗어났습니다!!\nbp = %p ~ %p\n힙 시작 = %p\n힙 끝 = %p\n", ptr, ptr + GET_SIZE(ptr), mem_heap_lo(), mem_heap_hi());
+        printf("블록 크기 : %d, 힙 영역 크기 : %d\n", GET_SIZE(ptr), mem_heap_hi() - mem_heap_lo());
+    }
 }
